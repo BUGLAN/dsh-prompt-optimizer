@@ -2,6 +2,36 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-10-23
+
+### Added
+
+- **每条提示词一个「允许图片输入」参数**：`prompts[].useImages`（布尔，默认 false）。
+  勾选后，用该条提示词优化时会把输入框里粘贴的图片一并送去；不勾选则始终按纯文本处理。
+- 该参数随配置持久化，并直接决定 ✨ 按钮的行为：默认提示词的 `useImages` 即全局生效值。
+- 设置页每条提示词的编辑卡片内新增勾选框；勾选过的提示词在卡片上显示「含图片」标记。
+
+### Behavior
+
+- **图片来源**：输入框里粘贴/拖入的图片，可有多张。它们由宿主 Conversation 服务持有，
+  通过 `InputState.attachmentIds` + `ctx.get("conversation").resolveDraftAttachments()` 取回，
+  仅挑出 `kind === 'image'` 的附件，转成 base64 后按原顺序批量提交。
+- **三重门槛**：模型支持图片（`inputModalities` 含 `image`）＋ 该提示词 `useImages === true`
+  ＋ 输入框确实有图片。任一不满足就只发文本，请求体与旧版本完全一致。
+- **不支持时静默降级**：不渲染勾选框（改为一行说明）、不调用上传接口、不发起任何图片请求、
+  不报错也不提示。
+- 单张图片读取失败不影响其余；Conversation 服务缺失或抛错时整体回退为纯文本。
+- 支持图片但载荷非法时（非白名单媒体类型、超出 `imageLimits.maxImageBytes` / `maxImagesPerMessage`）
+  返回 400 并在界面提示。
+
+### Verification
+
+- 实机双向验证（默认模型 `capabilities.image = true`，64×64 红圆 PNG）：
+  - `useImages: true` → 模型回「一个红色的圆形。」（图片确实进入请求）；
+  - 同一条提示词改为 `useImages: false`、同一载荷 → 模型回「我这边没有收到图片，无法描述其中的内容。」。
+- 以真实解析器返回 `['text']` 运行同一载荷：HTTP 200、上传调用 0 次、内容块仅 `["text"]`。
+- `npm test` 共 89 项，全部通过。
+
 ## [1.1.1] - 2026-10-23
 
 ### Fixed

@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createRenderer, installDom, loadClient, find, findAll, has, textOf, button } from './support.mjs'
+import { createRenderer, installDom, loadClient, find, findAll, has, textOf, button, walk } from './support.mjs'
 
 const dom = installDom()
 const { exports: client } = await loadClient()
@@ -17,12 +17,31 @@ let requests = []
 /** Queue of canned responses; each entry is `{ status, body }` or a Promise of one. */
 let responses = []
 
-/** Install a `fetch` stub that records requests and answers from `responses`. */
+/**
+ * Install a `fetch` stub that records requests and answers from `responses`.
+ *
+ * The plugin issues one configuration GET when `apply()` runs (to learn whether
+ * the default prompt accepts images). That startup call is answered from a
+ * default document and never consumes a queued response, so each test's queue
+ * describes only the calls that test makes.
+ */
 function stubFetch() {
   requests = []
   responses = []
+  const startupUrl = '/api/prompt-optimizer/config'
+  let startupServed = false
   globalThis.fetch = async (url, init) => {
-    requests.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body })
+    const href = String(url)
+    const method = init?.method ?? 'GET'
+    requests.push({ url: href, method, body: init?.body })
+    if (!startupServed && href === startupUrl && method === 'GET') {
+      startupServed = true
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ config: { defaultId: '', prompts: [] }, capabilities: { image: false } }),
+      }
+    }
     const next = responses.length > 0 ? responses.shift() : { status: 200, body: { ok: true } }
     const resolved = typeof next === 'function' ? await next() : next
     return {
@@ -199,7 +218,7 @@ test('composer: an empty draft stays disabled and never calls the endpoint', asy
   const { renderer } = mountComposer('   ')
   renderer.render()
   assert.equal(composerButton(renderer.tree()).props.disabled, true)
-  assert.equal(requests.length, 0)
+  assert.equal(requests.filter((r) => r.url === '/api/prompt-optimizer').length, 0)
 })
 
 test('composer: editing the draft by hand drops the undo affordance', async () => {
@@ -256,8 +275,13 @@ test('composer: legacy hosts still read props.input', async () => {
 
 // ----------------------------------------------------------------- settings
 
-/** Mount the settings section against the stubbed config endpoint. */
-function mountSettings(config, builtin) {
+/**
+ * Mount the settings section against the stubbed config endpoint.
+ * @param config - the saved prompt document.
+ * @param builtin - optional built-in prompt row.
+ * @param capabilities - optional model capabilities; omitted means a text-only model.
+ */
+function mountSettings(config, builtin, capabilities) {
   const Section = componentSlot('settings.section')
   const renderer = createRenderer((props) => Section(props))
   renderer.setProps({})
@@ -266,6 +290,7 @@ function mountSettings(config, builtin) {
     body: {
       config,
       builtin: builtin ?? { id: '', name: '内置默认', instruction: 'BUILTIN-INSTRUCTION' },
+      ...(capabilities === undefined ? {} : { capabilities }),
     },
   })
   return renderer
@@ -356,13 +381,13 @@ test('settings: editing a prompt sends the updated text', async () => {
 
   responses.push({
     status: 200,
-    body: { config: { defaultId: 'p1', prompts: [{ id: 'p1', name: '新名', instruction: 'NEW TEXT' }] } },
+    body: { config: { defaultId: 'p1', prompts: [{ id: 'p1', name: '新名', instruction: 'NEW TEXT', useImages: false }] } },
   })
   click(renderer.tree(), '保存')
   await renderer.settle()
 
   const post = JSON.parse(requests.find((request) => request.method === 'POST').body)
-  assert.deepEqual(post.config.prompts, [{ id: 'p1', name: '新名', instruction: 'NEW TEXT' }])
+  assert.deepEqual(post.config.prompts, [{ id: 'p1', name: '新名', instruction: 'NEW TEXT', useImages: false }])
   assert.equal(post.config.defaultId, 'p1', 'editing keeps the default selection')
 })
 
@@ -541,4 +566,251 @@ test('settings: an older failed save cannot roll back a newer successful one', a
   const cards = findAll(renderer.tree(), 'dsh-po-card')
   assert.equal(textOf(cards[2]).includes('默认'), true, 'the newer default is still selected')
   assert.equal(textOf(renderer.tree()).includes('stale failure'), false, 'the stale failure is not surfaced')
+})
+
+// ------------------------------------------------------------- 图片输入（可选）
+
+/** A tiny base64 payload standing in for image bytes. */
+const IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+/** Install a FileReader stub that reports a data URL for the given media type. */
+function stubFileReader(mediaType = 'image/png') {
+  globalThis.FileReader = class {
+    readAsDataURL() {
+      this.result = 'data:' + mediaType + ';base64,' + IMAGE_BASE64
+      setTimeout(() => { this.onload() }, 0)
+    }
+  }
+}
+
+/** Open the test tab and fill the input, ready to run. */
+async function prepareTest(renderer, config = { defaultId: '', prompts: [] }) {
+  click(renderer.tree(), '测试')
+  await renderer.settle()
+  control(renderer.tree(), 'dsh-po-test-input').props.onChange({ target: { value: 'draft' } })
+  await renderer.settle()
+}
+
+/** Tick the "use images" checkbox, revealing the file picker. */
+async function enableImageInput(renderer) {
+  const box = findAll(renderer.tree(), 'dsh-po-check')
+    .map((label) => label.props.children)
+    .flat()
+    .find((child) => child && child.type === 'input')
+  assert.ok(box, 'the image checkbox is present')
+  box.props.onChange({ target: { checked: true } })
+  await renderer.settle()
+}
+
+test('settings: a text-only model never renders the image affordance', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: false })
+  await renderer.settle()
+  await prepareTest(renderer)
+  assert.equal(find(renderer.tree(), 'dsh-po-file'), undefined, 'no image entry point is shown')
+  assert.equal(textOf(renderer.tree()).includes('参考图片'), false)
+})
+
+test('settings: a missing capabilities field reads as unsupported', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [] })
+  await renderer.settle()
+  await prepareTest(renderer)
+  assert.equal(find(renderer.tree(), 'dsh-po-file'), undefined)
+})
+
+test('settings: an image-capable model shows the optional image control', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+  await prepareTest(renderer)
+  assert.ok(find(renderer.tree(), 'dsh-po-check'), 'the image checkbox appears')
+  assert.equal(find(renderer.tree(), 'dsh-po-file'), undefined, 'the picker waits for the opt-in')
+  await enableImageInput(renderer)
+  assert.ok(find(renderer.tree(), 'dsh-po-file'), 'the add-image control appears after opting in')
+  const input = findAll(renderer.tree(), 'dsh-po-file-input')[0]
+  assert.equal(input.props.type, 'file')
+  assert.equal(input.props.accept, 'image/png,image/jpeg,image/webp,image/gif')
+})
+
+test('settings: without choosing an image the request body stays text-only', async () => {
+  stubFetch()
+  stubFileReader()
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+  await prepareTest(renderer)
+
+  responses.push({ status: 200, body: { optimized: 'ok' } })
+  click(renderer.tree(), '开始测试')
+  await renderer.settle()
+
+  const sent = JSON.parse(requests.find((r) => r.url === '/api/prompt-optimizer/test').body)
+  assert.equal('image' in sent, false, 'no image field when the user did not attach one')
+  assert.equal(sent.input, 'draft')
+})
+
+test('settings: choosing an image previews it and includes it in the request', async () => {
+  stubFetch()
+  stubFileReader('image/png')
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+  await prepareTest(renderer)
+  await enableImageInput(renderer)
+
+  const input = findAll(renderer.tree(), 'dsh-po-file-input')[0]
+  input.props.onChange({ target: { files: [{ type: 'image/png', name: 'shot.png' }], value: 'x' } })
+  await renderer.settle()
+
+  const thumb = find(renderer.tree(), 'dsh-po-thumb')
+  assert.ok(thumb, 'a thumbnail preview is rendered')
+  assert.match(thumb.props.src, /^data:image\/png;base64,/)
+  assert.ok(textOf(renderer.tree()).includes('shot.png'))
+
+  responses.push({ status: 200, body: { optimized: 'described' } })
+  click(renderer.tree(), '开始测试')
+  await renderer.settle()
+
+  const sent = JSON.parse(requests.find((r) => r.url === '/api/prompt-optimizer/test').body)
+  assert.equal(sent.image.mediaType, 'image/png')
+  assert.equal(sent.image.name, 'shot.png')
+  assert.equal(sent.image.data, IMAGE_BASE64, 'only the base64 body is sent, not the data URL prefix')
+})
+
+test('settings: removing the image returns to the plain text flow', async () => {
+  stubFetch()
+  stubFileReader()
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+  await prepareTest(renderer)
+  await enableImageInput(renderer)
+
+  findAll(renderer.tree(), 'dsh-po-file-input')[0].props.onChange({
+    target: { files: [{ type: 'image/png', name: 'shot.png' }], value: 'x' },
+  })
+  await renderer.settle()
+  click(renderer.tree(), '移除')
+  await renderer.settle()
+  assert.equal(find(renderer.tree(), 'dsh-po-thumb'), undefined, 'the preview is gone')
+
+  responses.push({ status: 200, body: { optimized: 'ok' } })
+  click(renderer.tree(), '开始测试')
+  await renderer.settle()
+  const sent = JSON.parse(requests.find((r) => r.url === '/api/prompt-optimizer/test').body)
+  assert.equal('image' in sent, false)
+})
+
+test('settings: a non-image file is refused locally without any request', async () => {
+  stubFetch()
+  stubFileReader('application/pdf')
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+  await prepareTest(renderer)
+  await enableImageInput(renderer)
+
+  findAll(renderer.tree(), 'dsh-po-file-input')[0].props.onChange({
+    target: { files: [{ type: 'application/pdf', name: 'doc.pdf' }], value: 'x' },
+  })
+  await renderer.settle()
+
+  assert.ok(textOf(renderer.tree()).includes('仅支持 PNG'))
+  assert.equal(find(renderer.tree(), 'dsh-po-thumb'), undefined)
+  assert.equal(requests.filter((r) => r.method === 'POST').length, 0, 'nothing is sent')
+})
+
+// ------------------------------------------- 每条提示词的「允许图片输入」参数
+
+/** A stand-in for the host Conversation service that owns pasted draft images. */
+function stubConversation(images) {
+  const calls = []
+  globalThis.__conversation = {
+    resolveDraftAttachments(ids) {
+      calls.push(ids)
+      return images
+    },
+  }
+  return calls
+}
+
+test('composer: pasted images are forwarded only when the default prompt opts in', async () => {
+  stubFetch()
+  stubFileReader()
+  stubConversation([{ kind: 'image', id: 'a1', file: { type: 'image/png', name: 'pasted.png' } }])
+  responses.push({ status: 200, body: { optimized: 'optimized!' } })
+
+  const { renderer } = mountComposer('look at this')
+  renderer.render()
+  // The startup sync answers text-only by default, so no images are attached.
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+
+  const body = JSON.parse(requests.find((r) => r.url === '/api/prompt-optimizer').body)
+  assert.deepEqual(body, { text: 'look at this' }, 'a prompt without the opt-in sends text only')
+})
+
+test('composer: a failing conversation service degrades to text without throwing', async () => {
+  stubFetch()
+  stubFileReader()
+  globalThis.__conversation = {
+    resolveDraftAttachments() { throw new Error('no such attachment') },
+  }
+  responses.push({ status: 200, body: { optimized: 'ok' } })
+
+  const { renderer } = mountComposer('draft')
+  renderer.render()
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+
+  const body = JSON.parse(requests.find((r) => r.url === '/api/prompt-optimizer').body)
+  assert.deepEqual(body, { text: 'draft' })
+})
+
+test('settings: each prompt carries its own "allow images" flag through save', async () => {
+  stubFetch()
+  stubFileReader()
+  const renderer = mountSettings({ defaultId: '', prompts: [] }, undefined, { image: true })
+  await renderer.settle()
+
+  click(renderer.tree(), '新增提示词')
+  await renderer.settle()
+  control(renderer.tree(), 'dsh-po-name-input').props.onChange({ target: { value: '带图版' } })
+  control(renderer.tree(), 'dsh-po-instruction-input').props.onChange({ target: { value: 'USE IMAGES' } })
+  await renderer.settle()
+
+  // Tick the per-prompt image switch inside the editor.
+  const boxes = []
+  walk(renderer.tree(), (node) => {
+    if (node.type === 'label' && String(node.props?.className ?? '').includes('dsh-po-check')) boxes.push(node)
+  })
+  assert.ok(boxes.length > 0, 'the editor shows an image switch')
+  const checkbox = boxes[0].props.children[1] ?? boxes[0].props.children[0]
+  const input = [].concat(boxes[0].props.children).find((c) => c && c.type === 'input')
+  assert.ok(input, 'the switch is a checkbox')
+  input.props.onChange({ target: { checked: true } })
+  await renderer.settle()
+
+  responses.push({
+    status: 200,
+    body: { config: { defaultId: '', prompts: [{ id: 'x', name: '带图版', instruction: 'USE IMAGES', useImages: true }] } },
+  })
+  click(renderer.tree(), '保存')
+  await renderer.settle()
+
+  const post = JSON.parse(requests.find((r) => r.method === 'POST').body)
+  assert.equal(post.config.prompts[0].useImages, true, 'the per-prompt flag is persisted')
+})
+
+test('settings: a prompt with the flag shows a marker on its card', async () => {
+  stubFetch()
+  const renderer = mountSettings({
+    defaultId: '',
+    prompts: [
+      { id: 'p1', name: '带图', instruction: 'A', useImages: true },
+      { id: 'p2', name: '纯文本', instruction: 'B', useImages: false },
+    ],
+  }, undefined, { image: true })
+  await renderer.settle()
+
+  const cards = findAll(renderer.tree(), 'dsh-po-card')
+  assert.ok(textOf(cards[1]).includes('含图片'), 'the opted-in prompt is marked')
+  assert.equal(textOf(cards[2]).includes('含图片'), false, 'the text-only prompt is not marked')
 })

@@ -117,3 +117,59 @@ test('the settings page covers create/edit/delete/default/test and persists thro
   assert.match(text, /fetch\(CONFIG_URL/, 'configuration goes through the host endpoint')
   assert.match(text, /method: "POST"/, 'saves are POSTed, not kept in component state only')
 })
+
+test('the image input is optional and gated on the model capability', () => {
+  const host = read('lib/index.js')
+  const client = read('lib/client.js')
+
+  assert.match(host, /async function modelSupportsImage\(\)/, 'capability is resolved on the host')
+  assert.match(host, /inputModalities/, 'the capability comes from the model metadata, not a heuristic')
+  assert.match(host, /modalities\.includes\('image'\)/, 'only an explicit `image` declaration counts')
+  assert.match(host, /capabilities: await capabilitiesView\(\)/, 'the client learns the capability from the config response')
+
+  // The upload API is reached only behind the capability gate.
+  assert.match(host, /attachments\.saveImages/, 'images use the attachment service')
+  assert.match(
+    host,
+    /await modelSupportsImage\(\)\)\s*\{\s*const admitted = await admitImage/,
+    'the upload path is guarded by the capability check',
+  )
+
+  // Client: the control is rendered only when the host says the model supports it.
+  assert.match(client, /capabilities\.image \? imageField\(\) : null/, 'the image field is conditional')
+  assert.match(client, /setCapabilities\(\{ image: Boolean\(/, 'a missing capability reads as unsupported')
+})
+
+test('each prompt carries its own optional "allow images" flag', () => {
+  const prompts = read('lib/prompts.js')
+  const host = read('lib/index.js')
+  const client = read('lib/client.js')
+
+  assert.match(prompts, /useImages: item\.useImages === true/, 'the field is normalized into the stored document')
+  assert.match(prompts, /export function resolveUseImages/, 'the active prompt exposes its flag')
+  assert.match(host, /resolveUseImages\(config\)/, 'the optimize route honors the default prompt flag')
+  assert.match(
+    host,
+    /resolveUseImages\(config\) && payload\.image !== undefined/,
+    'images are attached only when the prompt opted in',
+  )
+  assert.match(client, /optimizerAcceptsImages/, 'the composer button reads the same flag')
+  assert.match(client, /selectedTest\.useImages === true|startEdit|useImages: prompt\.useImages === true/,
+    'the settings editor edits the flag per prompt')
+})
+
+test('the composer forwards pasted images through the conversation service', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /resolveDraftAttachments/, 'draft attachments are resolved from the host service')
+  assert.match(client, /attachment\.kind !== "image"/, 'only image attachments are forwarded')
+  assert.match(client, /selectAttachmentIds/, 'attachment ids come from the input state')
+  assert.match(client, /catch \{\s*\/\/ 单张失败/, 'a failed read degrades quietly')
+})
+
+test('the text-only request shape is unchanged when no image is involved', () => {
+  const host = read('lib/index.js')
+  assert.match(host, /const images = Array\.isArray\(imageBlocks\) \? imageBlocks : \[\]/,
+    'the image list defaults to empty')
+  assert.match(host, /images\.length === 0[\s\S]{0,40}\{ type: 'text', text: text \}/,
+    'without images the message keeps the original single text block')
+})

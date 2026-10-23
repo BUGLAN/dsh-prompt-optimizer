@@ -14,6 +14,7 @@
 - **空内容保护**：输入框为空时按钮自动置灰，避免误触发；
 - **流式生成**：Host 端通过 `ctx.llm.stream` 流式读取模型输出，再统一回填；
 - **提示词设置页**：自定义多条优化指令，可新增 / 编辑 / 删除 / 设为默认，并带测试输入与效果预览；配置持久化并与实际优化联动。
+- **每条提示词可选图片输入**：「允许图片输入」是每条提示词自己的参数（`useImages`，默认关闭）。开启后，用这条提示词优化时会把输入框里粘贴的图片（可多张）一并送去；不开启则始终按纯文本处理。模型不支持图片时该勾选框不出现，流程静默退回纯文本。
 
 ## 目录结构
 
@@ -38,8 +39,8 @@ dsh-prompt-optimizer/
   | 方法 | 路径 | 作用 |
   | --- | --- | --- |
   | `POST` | `/api/prompt-optimizer` | 用**当前默认提示词**优化草稿，返回 `{ optimized }` |
-  | `POST` | `/api/prompt-optimizer/test` | 用请求里带的指令试跑一段输入，不写任何配置 |
-  | `GET` | `/api/prompt-optimizer/config` | 读取提示词文档与内置指令 |
+  | `POST` | `/api/prompt-optimizer/test` | 用请求里带的指令试跑一段输入（可附带一张 `image`），不写任何配置 |
+  | `GET` | `/api/prompt-optimizer/config` | 读取提示词文档、内置指令与 `capabilities` |
   | `POST` | `/api/prompt-optimizer/config` | 校验并保存整份提示词文档 |
 
   优化时通过 `resolveInstruction(config)` 解析系统提示词：默认提示词存在就用它，否则回落到内置指令。模型来自 `agentDefaultModel.currentSelection()`，经 `ctx.llm.stream` 流式生成。
@@ -62,6 +63,7 @@ dsh-prompt-optimizer/
 
 - **提示词 Tab**：内置默认指令始终以只读卡片展示；「新增提示词」可填写名称与优化指令；每条卡片支持「编辑」「删除」「设为默认」，被设为默认的卡片带「默认」徽标；
 - **测试 Tab**：选择要测试的提示词（含内置默认），填入测试输入后点击「开始测试」，结果会显示在下方预览区，可一键复制。测试只调用模型，不保存任何改动。
+- **允许图片输入（每条提示词）**：编辑提示词时勾选「允许图片输入」，该参数随提示词一起保存，卡片上会显示「含图片」标记。它是这条提示词自己的开关：只有设为默认的那条开启时，✨ 才会把输入框里粘贴的图片一并送去优化。当前模型不支持图片时，勾选框不出现，只显示一行说明。
 
 改动会即时 POST 到 Host 保存；保存失败时界面回滚并显示服务端给出的原因。
 
@@ -73,7 +75,7 @@ dsh-prompt-optimizer/
   "version": 1,
   "defaultId": "",        // "" = 使用内置默认；否则为某条 prompts[].id
   "prompts": [
-    { "id": "p1", "name": "工程严谨版", "instruction": "你是提示词优化助手……" }
+    { "id": "p1", "name": "工程严谨版", "instruction": "你是提示词优化助手……", "useImages": false }
   ]
 }
 ```
@@ -117,12 +119,13 @@ dsh plugin --profile web add "github:<owner>/dsh-prompt-optimizer#main"
 - **优化用的是哪条提示词？** 设置页中标记为「默认」的那条；没有自定义默认时使用内置指令。测试 Tab 只影响预览，不改动默认。
 - **为什么点了撤销箭头又变回 ✨？** 当草稿内容与本次优化结果不一致（你手动编辑过）时，撤销不再安全，按钮会自动回到 ✨，避免覆盖你的修改。
 - **为什么 `dsh plugin add "github:..."` 报 `Permission denied (publickey)`？** pnpm 对 `github:` 源默认走 SSH。请改用本地路径安装，或先配置 GitHub SSH 密钥，或发布到 npm 后按包名安装（见上文「安装步骤」）。
+- **为什么看不到「添加图片」？** 图片入口只在当前模型声明支持图片输入时渲染。模型能力取自 `inputModalities`（`Model['input']` 的镜像）：未声明 `image` 时入口整体不出现，也不会发出任何图片相关请求。
 - **优化会改变提示词的原意吗？** 内置指令要求只做清晰化、具体化改写，保留原任务意图与语言；若你自己写的默认指令要求别的风格，则以你的指令为准。
 
 ## 开发与测试
 
 ```bash
-npm test         # 契约 + Host + HTTP + Client + 样式回归，共 59 项
+npm test         # 契约 + Host + HTTP + Client + 样式回归，共 89 项
 npm run test:style   # 只跑对比度审计
 ```
 
