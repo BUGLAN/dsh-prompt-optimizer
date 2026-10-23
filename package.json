@@ -1,11 +1,12 @@
 {
   "name": "dsh-prompt-optimizer",
-  "version": "1.0.4",
-  "description": "Adds a ✨ icon button to the DSH web composer that optimizes the current draft prompt through the active model.",
+  "version": "1.1.1",
+  "description": "Adds a ✨ icon button to the DSH web composer that optimizes the current draft prompt through the active model, with one-click undo and a Settings page for managing, testing and choosing the default optimization prompt.",
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
-    "test": "node --test test/contract.test.mjs"
+    "test": "node --test test/contract.test.mjs test/host.test.mjs test/http.test.mjs test/client.test.mjs test/style-audit.test.mjs",
+    "test:style": "node test/style-audit.mjs"
   },
   "exports": {
     ".": "./lib/index.js",
