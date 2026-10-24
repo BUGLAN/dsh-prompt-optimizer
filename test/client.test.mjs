@@ -166,25 +166,33 @@ test('composer: idle button renders the sparkle and announces the action', () =>
   assert.equal(textOf(btn).trim(), '✨')
 })
 
-test('composer: the busy state shows the spinner only — no second "_" progress animation', () => {
+test('composer: the busy state keeps the same sparkle and only animates it', () => {
   stubFetch()
   responses.push(() => new Promise(() => {}))
   const { renderer } = mountComposer('hello')
   renderer.render()
+  const idleGlyph = textOf(composerButton(renderer.tree())).trim()
   composerButton(renderer.tree()).props.onClick()
   renderer.render()
   const btn = composerButton(renderer.tree())
   assert.match(btn.props.className, /dsh-po-busy/)
   assert.equal(btn.props.title, '正在优化提示词…')
+  assert.equal(textOf(btn).trim(), idleGlyph, 'the icon is not swapped while loading')
+  assert.equal(textOf(btn).trim(), '✨', 'the colored sparkle survives the busy state')
+  assert.equal(find(renderer.tree(), 'dsh-po-spark') !== undefined, true, 'the breathing animation targets the sparkle itself')
   assert.equal(find(renderer.tree(), 'dsh-po-progress'), undefined, 'the underscore/progress bar animation is gone')
   assert.equal(find(renderer.tree(), 'dsh-po-glyph') !== undefined, true, 'the icon sits in the animated wrapper')
+  // 加载态不产生任何额外可见文字：按钮里只有图标。
+  assert.equal(textOf(btn).replace('✨', '').trim(), '', 'no "正在优化…" style label is added to the button')
 })
 
 test('composer: the stylesheet no longer defines the progress animation', () => {
   const css = dom.styleTags.map((tag) => tag.textContent).join(String.fromCharCode(10))
   assert.doesNotMatch(css, /dsh-po-progress/)
   assert.doesNotMatch(css, /dsh-po-slide/)
-  assert.match(css, /dsh-po-spin/, 'the spinner animation is still there')
+  assert.doesNotMatch(css, /dsh-po-spinner/, 'the separate spinner icon is gone')
+  assert.doesNotMatch(css, /dsh-po-spin{/, 'the rotation keyframes are gone with it')
+  assert.match(css, /dsh-po-breathe/, 'the busy state animates the sparkle itself')
   assert.match(css, /dsh-po-glyph-in/, 'the icon swap has its own transition')
   assert.match(css, /prefers-reduced-motion/, 'the motion is opt-out for reduced-motion users')
 })

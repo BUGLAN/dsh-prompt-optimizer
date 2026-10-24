@@ -2,6 +2,26 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [1.3.1] - 2026-10-24
+
+### Changed
+
+- **加载动画改为「原样 ✨ 呼吸」**：优化进行中不再把图标换成描边旋转圈，
+  而是保留同一枚彩色 emoji，叠加 `scale` / 微旋 / 暖色 `drop-shadow` 的呼吸动画。
+  加载前后是同一个视觉符号，不再出现「符号突然消失」的割裂感。
+- 呼吸动画只作用于 `.dsh-po-spark`，`.dsh-po-glyph` 的入场过渡保持原样；
+  `busy` 不再参与 React `key`，避免每次进出加载态都重新挂载并打断动画。
+
+### Removed
+
+- `SpinnerIcon` 组件、`.dsh-po-spinner` 类与 `@keyframes dsh-po-spin`。
+  加载态与其下划线进度条属于重复表达，现在只保留一种。
+
+### Verification
+
+- `npm test` 109 项全通过；新增断言覆盖：加载中按钮文本仍是 `✨`、
+  按钮内不出现任何额外文案、CSS 里 `dsh-po-breathe` 存在且 spinner 相关规则已删除。
+
 ## [1.3.0] - 2026-10-24
 
 ### Added

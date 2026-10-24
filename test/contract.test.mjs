@@ -75,11 +75,14 @@ test('disabled state is grayscale (distinct from enabled, equally legible)', () 
   assert.match(text, /style\.textContent = CSS/, 'apply() must rewrite the injected <style> content idempotently')
 })
 
-test('the busy state has exactly one animation: the spinner', () => {
+test('the busy state animates the original sparkle instead of swapping in a spinner', () => {
   const text = read('lib/client.js')
-  assert.match(text, /dsh-po-spinner\{animation:dsh-po-spin/, 'the spinner animation remains')
-  assert.doesNotMatch(text, /dsh-po-progress/, 'the underscore/progress bar animation is removed')
-  assert.doesNotMatch(text, /dsh-po-slide/, 'its keyframes are removed with it')
+  assert.match(text, /dsh-po-btn\.dsh-po-busy \.dsh-po-spark\{animation:dsh-po-breathe/, 'the busy state animates the emoji itself')
+  assert.doesNotMatch(text, /function SpinnerIcon\(/, 'the spinner component is removed')
+  assert.doesNotMatch(text, /dsh-po-spinner/, 'its class is removed')
+  assert.doesNotMatch(text, /@keyframes dsh-po-spin\{/, 'its rotation keyframes are removed')
+  assert.doesNotMatch(text, /dsh-po-progress/, 'the underscore/progress bar animation stays removed')
+  assert.doesNotMatch(text, /dsh-po-slide/, 'its keyframes stay removed')
 })
 
 test('success swaps the icon for an undo affordance inside a transitioned wrapper', () => {
@@ -87,7 +90,7 @@ test('success swaps the icon for an undo affordance inside a transitioned wrappe
   assert.match(text, /function UndoIcon\(\)/, 'an undo icon exists')
   assert.match(text, /dsh-po-undo/, 'the undo state has its own class')
   assert.match(text, /dsh-po-glyph/, 'icons render inside the animated glyph wrapper')
-  assert.match(text, /key: busy \? "busy" : canUndo \? "undo" : "idle"/, 'the key change re-mounts so the transition replays')
+  assert.match(text, /key: canUndo \? "undo" : "idle"/, 'only the undo swap re-mounts, so the breathing animation is never restarted')
   assert.match(text, /撤销优化，恢复原始提示词/, 'the undo action is labelled for hover and assistive tech')
 })
 
