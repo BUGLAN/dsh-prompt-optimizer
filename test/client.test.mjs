@@ -16,6 +16,10 @@ const { exports: client } = await loadClient()
 let requests = []
 /** Queue of canned responses; each entry is `{ status, body }` or a Promise of one. */
 let responses = []
+/** Seed document returned by the one startup config GET. */
+let startupConfig = { defaultId: '', prompts: [] }
+/** Seed capability returned by the startup config GET. */
+let startupCapabilities = { image: false }
 
 /**
  * Install a `fetch` stub that records requests and answers from `responses`.
@@ -28,6 +32,8 @@ let responses = []
 function stubFetch() {
   requests = []
   responses = []
+  startupConfig = { defaultId: '', prompts: [] }
+  startupCapabilities = { image: false }
   const startupUrl = '/api/prompt-optimizer/config'
   let startupServed = false
   globalThis.fetch = async (url, init) => {
@@ -39,7 +45,7 @@ function stubFetch() {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ config: { defaultId: '', prompts: [] }, capabilities: { image: false } }),
+        json: async () => ({ config: startupConfig, capabilities: startupCapabilities }),
       }
     }
     const next = responses.length > 0 ? responses.shift() : { status: 200, body: { ok: true } }
@@ -66,9 +72,9 @@ function mountComponent(props) {
  * re-renders with that new value.
  * @param initialDraft - starting draft text.
  */
-function mountComposer(initialDraft) {
+function mountComposer(initialDraft, attachmentIds = []) {
   const slot = componentSlot()
-  const state = { draft: initialDraft, writes: [] }
+  const state = { draft: initialDraft, attachmentIds: attachmentIds, writes: [] }
   const renderer = createRenderer((rootProps) => slot(rootProps))
   const props = {
     useInput: (select) => select(state),
@@ -97,7 +103,7 @@ function componentSlot(target = 'conversation.input.left') {
       return () => registry.delete(options.name + '#' + options.id)
     },
   }
-  const ctx = { get: (name) => (name === 'slots' ? slots : undefined) }
+  const ctx = { get: (name) => name === 'slots' ? slots : name === 'conversation' ? globalThis.__conversation : undefined }
   client.apply(ctx)
   const entries = [...registry.values()]
   const match = entries.find((entry) => entry.options.name === target && typeof entry.component === 'function')
@@ -133,6 +139,22 @@ function click(tree, label) {
 }
 
 // ---------------------------------------------------------------- composer
+
+/** Open the toolbar radio picker and wait for its startup config load. */
+async function openPicker(renderer) {
+  await renderer.settle()
+  find(renderer.tree(), 'dsh-po-choice').props.onClick()
+  return renderer.settle()
+}
+
+/** The radio inputs currently rendered inside the picker popover. */
+function pickerRadios(tree) {
+  const found = []
+  walk(tree, (node) => {
+    if (node.type === 'input' && node.props?.type === 'radio') found.push(node)
+  })
+  return found
+}
 
 test('composer: idle button renders the sparkle and announces the action', () => {
   stubFetch()
@@ -289,7 +311,7 @@ function mountSettings(config, builtin, capabilities) {
     status: 200,
     body: {
       config,
-      builtin: builtin ?? { id: '', name: '内置默认', instruction: 'BUILTIN-INSTRUCTION' },
+      builtin: builtin ?? { id: '', name: '默认', instruction: 'BUILTIN-INSTRUCTION' },
       ...(capabilities === undefined ? {} : { capabilities }),
     },
   })
@@ -310,7 +332,7 @@ test('settings: the section loads the saved prompts and marks the default', asyn
   assert.equal(requests[0].method, 'GET')
 
   const names = findAll(tree, 'dsh-po-name').map((node) => textOf(node))
-  assert.deepEqual(names, ['内置默认', '简洁版', '工程版'])
+  assert.deepEqual(names, ['默认', '简洁版', '工程版'])
   const badges = findAll(tree, 'dsh-po-badge').map((node) => textOf(node))
   assert.deepEqual(badges, ['默认'])
   const cards = findAll(tree, 'dsh-po-card')
@@ -813,4 +835,414 @@ test('settings: a prompt with the flag shows a marker on its card', async () => 
   const cards = findAll(renderer.tree(), 'dsh-po-card')
   assert.ok(textOf(cards[1]).includes('含图片'), 'the opted-in prompt is marked')
   assert.equal(textOf(cards[2]).includes('含图片'), false, 'the text-only prompt is not marked')
+})
+
+// ------------------------------------------------------- 优化提示词单选
+
+test('picker: the menu stays compact like the host menus', async () => {
+  stubFetch()
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+  const tree = renderer.tree()
+  assert.equal(find(tree, 'dsh-po-popover-head'), undefined, 'no oversized title/description header')
+  assert.equal(find(tree, 'dsh-po-popover-foot'), undefined, 'no long footer copy')
+  assert.equal(findAll(tree, 'dsh-po-option-line').length, 0, 'rows are a single compact line')
+  const option = find(tree, 'dsh-po-option')
+  assert.ok(option, 'an option row exists')
+  assert.equal(findAll(tree, 'dsh-po-switch').length, 1, 'each row keeps its image switch')
+  const selected = find(tree, 'dsh-po-option-selected')
+  assert.ok(selected, 'the active row is still marked')
+  assert.equal(textOf(selected).includes('图片'), false, 'no image caption on the selected row')
+})
+
+test('picker: the toolbar trigger sits beside the sparkle and keeps the 28px row', async () => {
+  stubFetch()
+  const { renderer } = mountComposer('hello')
+  await renderer.settle()
+  const controls = find(renderer.tree(), 'dsh-po-composer-controls')
+  assert.ok(controls, 'a compact control wrapper is rendered')
+  assert.equal(controls.props.children.length, 2, 'sparkle + radio trigger only')
+  const trigger = find(renderer.tree(), 'dsh-po-choice')
+  assert.equal(trigger.props['aria-haspopup'], 'dialog')
+  assert.equal(trigger.props['aria-expanded'], false)
+  assert.match(trigger.props.title, /优化提示词选项：默认（不支持图片输入）/)
+})
+
+test('picker: opening shows one radio per prompt, with the default checked', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: 'p2',
+    prompts: [
+      { id: 'p1', name: '简洁版', instruction: 'SHORT', useImages: false },
+      { id: 'p2', name: '带图版', instruction: 'IMAGES', useImages: true },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  const radios = pickerRadios(renderer.tree())
+  assert.equal(radios.length, 3, 'built-in + two custom prompts')
+  assert.deepEqual(radios.map((radio) => radio.props.value), ['', 'p1', 'p2'])
+  assert.deepEqual(radios.map((radio) => radio.props.checked), [false, false, true],
+    'the saved default is the selected radio')
+  assert.equal(find(renderer.tree(), 'dsh-po-option-selected') !== undefined, true)
+})
+
+/** Every per-option image switch in the popover. */
+function pickerSwitches(tree) {
+  const found = []
+  walk(tree, (node) => {
+    if (node.type === 'input' && node.props?.role === 'switch') found.push(node)
+  })
+  return found
+}
+
+test('picker: every option owns an interactive image switch', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [
+      { id: 'p1', name: '纯文本', instruction: 'TEXT', useImages: false },
+      { id: 'p2', name: '带图', instruction: 'IMAGES', useImages: true },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  const switches = pickerSwitches(renderer.tree())
+  assert.equal(switches.length, 3, 'one switch per row, including built-in')
+  assert.deepEqual(switches.map((node) => node.props.checked), [false, false, true])
+  assert.deepEqual(switches.map((node) => node.props['aria-label']), [
+    '默认：允许图片输入', '纯文本：允许图片输入', '带图：允许图片输入',
+  ])
+  assert.equal(find(renderer.tree(), 'dsh-po-option-media'), undefined,
+    'the redundant "图片" caption is gone; the switch is the affordance')
+  assert.equal(textOf(renderer.tree()).includes('图片'), false)
+})
+
+test('picker: an image opt-in on a text-only model keeps the switch but says it is inactive', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: 'p1',
+    prompts: [{ id: 'p1', name: '带图', instruction: 'IMAGES', useImages: true }],
+  }
+  startupCapabilities = { image: false }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+  const switches = pickerSwitches(renderer.tree())
+  assert.equal(switches.length, 2)
+  assert.deepEqual(switches.map((node) => node.props.checked), [false, true],
+    'the saved preference survives even when the model cannot use it')
+  assert.equal(find(renderer.tree(), 'dsh-po-option-media'), undefined,
+    'no extra caption is rendered even when the model cannot use images')
+  assert.equal(pickerSwitches(renderer.tree())[1].props.disabled, false,
+    'the saved switch stays operable; only the actual request is gated')
+  assert.match(find(renderer.tree(), 'dsh-po-choice').props.title, /暂不支持/)
+})
+
+test('picker: toggling one row saves that prompt image flag and keeps the selected radio', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: 'p1',
+    prompts: [
+      { id: 'p1', name: '纯文本', instruction: 'TEXT', useImages: false },
+      { id: 'p2', name: '带图', instruction: 'IMAGES', useImages: false },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  const nextPrompts = [
+    { id: 'p1', name: '纯文本', instruction: 'TEXT', useImages: false },
+    { id: 'p2', name: '带图', instruction: 'IMAGES', useImages: true },
+  ]
+  responses.push({
+    status: 200,
+    body: { config: { defaultId: 'p1', prompts: nextPrompts }, capabilities: { image: true } },
+  })
+  pickerSwitches(renderer.tree())[2].props.onChange({ target: { checked: true } })
+  await renderer.settle()
+
+  const sent = JSON.parse(requests.find((request) => request.method === 'POST').body).config
+  assert.equal(sent.prompts[1].useImages, true, 'the second row was switched on')
+  assert.equal(sent.prompts[0].useImages, false, 'the other row is untouched')
+  assert.equal(sent.defaultId, 'p1', 'toggling images does not change the selected prompt')
+  assert.equal(find(renderer.tree(), 'dsh-po-popover') !== undefined, true, 'the menu stays open for more toggles')
+})
+
+test('picker: the built-in row switch persists builtinUseImages', async () => {
+  stubFetch()
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  responses.push({
+    status: 200,
+    body: {
+      config: { defaultId: '', builtinUseImages: true, prompts: [] },
+      capabilities: { image: true },
+    },
+  })
+  pickerSwitches(renderer.tree())[0].props.onChange({ target: { checked: true } })
+  await renderer.settle()
+
+  const sent = JSON.parse(requests.find((request) => request.method === 'POST').body)
+  assert.equal(sent.config.builtinUseImages, true)
+  assert.equal(pickerSwitches(renderer.tree())[0].props.checked, true)
+})
+
+test('picker: a failed switch save rolls back and reports the error', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [{ id: 'p1', name: '纯文本', instruction: 'TEXT', useImages: false }],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  responses.push({ status: 400, body: { error: '配置写入失败' } })
+  pickerSwitches(renderer.tree())[1].props.onChange({ target: { checked: true } })
+  await renderer.settle()
+
+  assert.equal(pickerSwitches(renderer.tree())[1].props.checked, false, 'the switch rolls back')
+  assert.ok(textOf(renderer.tree()).includes('保存失败：配置写入失败'))
+})
+
+test('picker: choosing another preset persists defaultId and checks that radio', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [
+      { id: 'p1', name: '简洁版', instruction: 'SHORT', useImages: false },
+      { id: 'p2', name: '带图版', instruction: 'IMAGES', useImages: true },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  responses.push({
+    status: 200,
+    body: {
+      config: { defaultId: 'p2', prompts: startupConfig.prompts },
+      capabilities: { image: true },
+    },
+  })
+  pickerRadios(renderer.tree())[2].props.onChange()
+  await renderer.settle()
+
+  const post = requests.find((request) => request.method === 'POST')
+  assert.equal(post.url, '/api/prompt-optimizer/config')
+  assert.equal(JSON.parse(post.body).config.defaultId, 'p2')
+  assert.equal(find(renderer.tree(), 'dsh-po-popover'), undefined, 'the menu closes after saving')
+  assert.match(find(renderer.tree(), 'dsh-po-choice').props.title, /带图版（支持图片输入）/)
+
+  await openPicker(renderer)
+  assert.deepEqual(pickerRadios(renderer.tree()).map((radio) => radio.props.checked), [false, false, true])
+})
+
+test('picker: a failed save rolls the radio back and shows the reason', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [{ id: 'p1', name: '简洁版', instruction: 'SHORT', useImages: false }],
+  }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  responses.push({ status: 400, body: { error: '配置格式无效' } })
+  pickerRadios(renderer.tree())[1].props.onChange()
+  await renderer.settle()
+
+  assert.match(find(renderer.tree(), 'dsh-po-choice').props.title, /默认/)
+  assert.ok(textOf(renderer.tree()).includes('保存失败：配置格式无效'))
+  const radios = pickerRadios(renderer.tree())
+  assert.deepEqual(radios.map((radio) => radio.props.checked), [true, false])
+})
+
+test('picker: escape closes the menu without changing the selection', async () => {
+  stubFetch()
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+  const popover = find(renderer.tree(), 'dsh-po-popover')
+  popover.props.onKeyDown({ key: 'Escape', preventDefault() {} })
+  await renderer.settle()
+  assert.equal(find(renderer.tree(), 'dsh-po-popover'), undefined)
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 0)
+})
+
+test('picker: the selected option controls whether the sparkle forwards images', async () => {
+  stubFetch()
+  stubFileReader()
+  startupConfig = {
+    defaultId: 'p1',
+    prompts: [
+      { id: 'p1', name: '纯文本', instruction: 'TEXT', useImages: false },
+      { id: 'p2', name: '带图', instruction: 'IMAGES', useImages: true },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const conversationCalls = stubConversation([
+    { kind: 'image', id: 'a1', file: { type: 'image/png', name: 'pasted.png' } },
+  ])
+  const { renderer, state } = mountComposer('look at this', ['a1'])
+  await renderer.settle()
+
+  responses.push({ status: 200, body: { optimized: 'first' } })
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  let body = JSON.parse(requests.find((request) => request.url === '/api/prompt-optimizer').body)
+  assert.deepEqual(body, { text: 'look at this' }, 'the text-only prompt forwards no image')
+
+  // Leave the undo state by editing the draft, then optimize again after switching.
+  state.draft = 'second draft'
+  renderer.setProps({})
+  await renderer.settle()
+
+  await openPicker(renderer)
+  responses.push({
+    status: 200,
+    body: {
+      config: { defaultId: 'p2', prompts: startupConfig.prompts },
+      capabilities: { image: true },
+    },
+  })
+  pickerRadios(renderer.tree())[2].props.onChange()
+  await renderer.settle()
+
+  responses.push({ status: 200, body: { optimized: 'second' } })
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  body = JSON.parse(requests.filter((request) => request.url === '/api/prompt-optimizer').at(-1).body)
+  assert.equal(body.text, 'second draft')
+  assert.equal(body.image[0].data, IMAGE_BASE64)
+  assert.equal(body.image[0].mediaType, 'image/png')
+  assert.ok(conversationCalls.length > 0, 'the conversation service was consulted after opting in')
+})
+
+test('picker: the trigger title follows the selected prompt', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [{ id: 'p1', name: '工程严谨版', instruction: 'STRICT' }],
+  }
+  const { renderer } = mountComposer('hello')
+  await renderer.settle()
+
+  const idle = find(renderer.tree(), 'dsh-po-choice')
+  const idleText = textOf(idle).trim()
+  assert.ok(idleText.includes('默认'), 'the initial title is the selected built-in prompt')
+  assert.equal(find(renderer.tree(), 'dsh-po-choice-title').props.title, '默认')
+
+  await openPicker(renderer)
+  responses.push({
+    status: 200,
+    body: { config: { ...startupConfig, defaultId: 'p1' }, capabilities: { image: false } },
+  })
+  pickerRadios(renderer.tree())[1].props.onChange()
+  await renderer.settle()
+
+  const chosen = find(renderer.tree(), 'dsh-po-choice')
+  assert.ok(textOf(chosen).includes('工程严谨版'), 'the trigger shows the newly selected title')
+  assert.equal(find(renderer.tree(), 'dsh-po-choice-title').props.title, '工程严谨版')
+  assert.equal(textOf(chosen).includes('默认'), false)
+})
+
+test('picker: toggling images on the active prompt changes the next sparkle request', async () => {
+  stubFetch()
+  stubFileReader()
+  startupConfig = {
+    defaultId: 'p1',
+    prompts: [{ id: 'p1', name: '工程版', instruction: 'IMAGES', useImages: false }],
+  }
+  startupCapabilities = { image: true }
+  stubConversation([{ kind: 'image', id: 'a1', file: { type: 'image/png', name: 'pasted.png' } }])
+  const { renderer, state } = mountComposer('look at this', ['a1'])
+  await renderer.settle()
+
+  responses.push({ status: 200, body: { optimized: 'first' } })
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  let body = JSON.parse(requests.find((request) => request.url === '/api/prompt-optimizer').body)
+  assert.deepEqual(body, { text: 'look at this' }, 'switch off means text only')
+
+  state.draft = 'second draft'
+  renderer.setProps({})
+  await renderer.settle()
+
+  await openPicker(renderer)
+  responses.push({
+    status: 200,
+    body: {
+      config: { defaultId: 'p1', prompts: [{ ...startupConfig.prompts[0], useImages: true }] },
+      capabilities: { image: true },
+    },
+  })
+  pickerSwitches(renderer.tree())[1].props.onChange({ target: { checked: true } })
+  await renderer.settle()
+  assert.match(find(renderer.tree(), 'dsh-po-choice').props.title, /支持图片输入/)
+
+  responses.push({ status: 200, body: { optimized: 'second' } })
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  body = JSON.parse(requests.filter((request) => request.url === '/api/prompt-optimizer').at(-1).body)
+  assert.equal(body.image[0].data, IMAGE_BASE64, 'the new switch value is effective immediately')
+})
+
+test('picker: clicking anywhere on an option row selects that prompt', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [{ id: 'p1', name: '工程版', instruction: 'STRICT' }],
+  }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  responses.push({
+    status: 200,
+    body: {
+      config: { ...startupConfig, defaultId: 'p1' },
+      capabilities: { image: false },
+    },
+  })
+  const rows = findAll(renderer.tree(), 'dsh-po-option')
+  rows[1].props.onClick()
+  await renderer.settle()
+
+  const sent = JSON.parse(requests.find((request) => request.method === 'POST').body)
+  assert.equal(sent.config.defaultId, 'p1', 'the row itself selects the prompt')
+  assert.match(find(renderer.tree(), 'dsh-po-choice').props.title, /工程版/)
+})
+
+test('picker: saving a switch does not add or remove menu rows', async () => {
+  stubFetch()
+  startupConfig = {
+    defaultId: '',
+    prompts: [
+      { id: 'p1', name: '一', instruction: 'ONE', useImages: false },
+      { id: 'p2', name: '二', instruction: 'TWO', useImages: false },
+    ],
+  }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  const before = find(renderer.tree(), 'dsh-po-popover')
+  const rowsBefore = findAll(renderer.tree(), 'dsh-po-option').length
+  responses.push(() => new Promise(() => {}))
+  pickerSwitches(renderer.tree())[1].props.onChange({ target: { checked: true } })
+  await renderer.settle()
+
+  const after = find(renderer.tree(), 'dsh-po-popover')
+  assert.equal(findAll(renderer.tree(), 'dsh-po-option').length, rowsBefore,
+    'no transient row appears while the switch is saving')
+  assert.equal(find(renderer.tree(), 'dsh-po-popover-note'), undefined,
+    'the saving note that changed the menu height is gone')
+  assert.equal(after.props.children.length, before.props.children.length,
+    'the popover keeps the same structural height')
+  assert.equal(pickerSwitches(renderer.tree())[1].props.disabled, true,
+    'the switch still shows its busy state without resizing the menu')
 })

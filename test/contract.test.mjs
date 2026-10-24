@@ -153,7 +153,7 @@ test('each prompt carries its own optional "allow images" flag', () => {
     /resolveUseImages\(config\) && payload\.image !== undefined/,
     'images are attached only when the prompt opted in',
   )
-  assert.match(client, /optimizerAcceptsImages/, 'the composer button reads the same flag')
+  assert.match(client, /activeImageSupport\(\)\.allowed/, 'the composer button reads the selected prompt + model gate')
   assert.match(client, /selectedTest\.useImages === true|startEdit|useImages: prompt\.useImages === true/,
     'the settings editor edits the flag per prompt')
 })
@@ -172,4 +172,49 @@ test('the text-only request shape is unchanged when no image is involved', () =>
     'the image list defaults to empty')
   assert.match(host, /images\.length === 0[\s\S]{0,40}\{ type: 'text', text: text \}/,
     'without images the message keeps the original single text block')
+})
+
+test('the composer has an inline radio picker before the sparkle', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /function PromptPicker\(props\)/, 'a dedicated picker component exists')
+  const pickerAt = client.indexOf("h(PromptPicker, { disabled: busy })")
+  const sparkleAt = client.indexOf('className: "dsh-po-btn"', pickerAt)
+  assert.ok(pickerAt > 0 && sparkleAt > pickerAt, 'the picker is rendered before the sparkle')
+  assert.match(client, /type: "radio"/, 'the options are real radio inputs')
+  assert.match(client, /role: "radiogroup"/, 'the options form a radiogroup')
+  assert.match(client, /name: "dsh-po-prompt"/, 'all options share one radio group name')
+  assert.ok(client.includes("dsh-po-composer-controls") && client.includes("height:28px"), 'the control fits the 28px toolbar row')
+  assert.ok(client.includes("dsh-po-popover") && client.includes("bottom:calc(100% + 8px)"), 'the menu opens upward')
+  assert.match(client, /"aria-haspopup": "dialog"/, 'the trigger announces its popup')
+  assert.match(client, /"aria-expanded": open/, 'the trigger exposes the expanded state')
+})
+
+test('the trigger displays the active prompt title', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /className: "dsh-po-choice-title", title: active\.name \}, active\.name/, 'the title is rendered in the trigger')
+  assert.match(client, /dsh-po-choice-title\{[^}]*text-overflow:ellipsis/, 'a long title truncates instead of stretching the row')
+  assert.doesNotMatch(client, /conversation\.input\.dock/, 'no separate strip above the composer is injected')
+})
+
+test('every picker row has an interactive image switch', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /"支持图片输入"/, 'the positive capability label exists')
+  assert.match(client, /"不支持图片输入"/, 'the negative capability label exists')
+  assert.match(client, /function imageSupportFor\(option, capabilities\)/, 'the label is derived from prompt opt-in + model capability')
+  assert.match(client, /option\.useImages !== true/, 'a prompt without the opt-in reports unsupported')
+  assert.match(client, /capabilities\.image !== true/, 'a text-only model reports unsupported')
+  assert.match(client, /role: "switch"/, 'each row renders a real switch input')
+  assert.match(client, /dsh-po-switch-track/, 'the switch has a visible track')
+  assert.match(client, /function configWithUseImages\(config, id, useImages\)/, 'the switch has a persistence helper')
+  assert.match(client, /builtinUseImages: useImages === true/, 'the built-in row has a saved preference too')
+})
+
+test('picking a prompt and toggling images share one persisted save path', () => {
+  const client = read('lib/client.js')
+  const prompts = read('lib/prompts.js')
+  assert.match(client, /async function persistConfig\(mutate\)/, 'selection and switches share one save path')
+  assert.match(client, /body: JSON\.stringify\(\{ config: nextConfig \}\)/, 'the document goes through the config endpoint')
+  assert.match(client, /setCatalogState\(\{ config: previousConfig \}\)/, 'a rejected save rolls back')
+  assert.match(prompts, /builtinUseImages: builtinUseImages/, 'the built-in switch is normalized')
+  assert.match(prompts, /if \(defaultId === BUILTIN_ID\) \{\s*return config[\s\S]{0,120}builtinUseImages === true/, 'the built-in switch affects image resolution')
 })

@@ -475,7 +475,11 @@ test('host: the per-prompt flag is normalized and defaults to false', async () =
 
 test('host: resolveUseImages follows the default prompt', async () => {
   const { resolveUseImages } = await import('../lib/prompts.js')
-  assert.equal(resolveUseImages({ defaultId: '', prompts: [] }), false, 'built-in is text-only')
+  assert.equal(resolveUseImages({ defaultId: '', prompts: [] }), false, 'built-in is text-only by default')
+  assert.equal(resolveUseImages({ defaultId: '', builtinUseImages: true, prompts: [] }), true,
+    'the built-in row switch is honored')
+  assert.equal(resolveUseImages({ defaultId: 'a', builtinUseImages: true, prompts: [{ id: 'a', useImages: false }] }), false,
+    'a selected custom prompt ignores the built-in preference')
   assert.equal(resolveUseImages({
     defaultId: 'b',
     prompts: [

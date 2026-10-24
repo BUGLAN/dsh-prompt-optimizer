@@ -1,7 +1,7 @@
 {
   "name": "dsh-prompt-optimizer",
-  "version": "1.2.0",
-  "description": "Adds a ✨ icon button to the DSH web composer that optimizes the current draft prompt through the active model, with one-click undo and a Settings page for managing, testing and choosing the default optimization prompt.",
+  "version": "1.3.0",
+  "description": "Adds a ✨ icon button and an inline prompt-preset radio picker (showing the active preset title) to the DSH web composer. Each preset has a saved image-input switch, plus one-click undo and a Settings page for managing and testing presets.",
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
