@@ -9,3 +9,6 @@ pnpm-lock.yaml
 # Editor
 .idea/
 .vscode/
+
+# 一次性设计原型（加载动画选型用的对照页与截图），不随包发布
+prototype/
