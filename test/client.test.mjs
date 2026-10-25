@@ -163,7 +163,10 @@ test('composer: idle button renders the sparkle and announces the action', () =>
   const btn = composerButton(tree)
   assert.equal(btn.props.disabled, false)
   assert.equal(btn.props.title, '优化提示词')
-  assert.equal(textOf(btn).trim(), '✨')
+  const spark = find(btn, 'dsh-po-spark')
+  assert.ok(spark, 'the idle icon is rendered')
+  assert.equal(spark.type, 'svg', 'the icon is a vector glyph, not an emoji text node')
+  assert.equal(textOf(btn).trim(), '', 'no visible text is rendered inside the button')
 })
 
 test('composer: the busy state keeps the same sparkle and only animates it', () => {
@@ -171,19 +174,19 @@ test('composer: the busy state keeps the same sparkle and only animates it', () 
   responses.push(() => new Promise(() => {}))
   const { renderer } = mountComposer('hello')
   renderer.render()
-  const idleGlyph = textOf(composerButton(renderer.tree())).trim()
+  const idleSpark = find(composerButton(renderer.tree()), 'dsh-po-spark')
   composerButton(renderer.tree()).props.onClick()
   renderer.render()
   const btn = composerButton(renderer.tree())
   assert.match(btn.props.className, /dsh-po-busy/)
   assert.equal(btn.props.title, '正在优化提示词…')
-  assert.equal(textOf(btn).trim(), idleGlyph, 'the icon is not swapped while loading')
-  assert.equal(textOf(btn).trim(), '✨', 'the colored sparkle survives the busy state')
-  assert.equal(find(renderer.tree(), 'dsh-po-spark') !== undefined, true, 'the breathing animation targets the sparkle itself')
+  const busySpark = find(btn, 'dsh-po-spark')
+  assert.ok(busySpark, 'the same icon keeps rendering while loading')
+  assert.deepEqual(busySpark.props, idleSpark.props, 'the icon markup is identical — only the button class changes')
   assert.equal(find(renderer.tree(), 'dsh-po-progress'), undefined, 'the underscore/progress bar animation is gone')
   assert.equal(find(renderer.tree(), 'dsh-po-glyph') !== undefined, true, 'the icon sits in the animated wrapper')
   // 加载态不产生任何额外可见文字：按钮里只有图标。
-  assert.equal(textOf(btn).replace('✨', '').trim(), '', 'no "正在优化…" style label is added to the button')
+  assert.equal(textOf(btn).trim(), '', 'no "正在优化…" style label is added to the button')
 })
 
 test('composer: the stylesheet no longer defines the progress animation', () => {
@@ -211,7 +214,7 @@ test('composer: a successful optimization becomes undoable and restores the orig
   assert.match(btn.props.className, /dsh-po-undo/, 'success switches the icon to the undo affordance')
   assert.equal(btn.props.title, '撤销优化，恢复原始提示词')
   assert.equal(btn.props.disabled, false, 'the undo button stays clickable')
-  assert.notEqual(textOf(btn).trim(), '✨', 'the icon is no longer the sparkle')
+  assert.equal(find(btn, 'dsh-po-spark'), undefined, 'the icon is no longer the sparkle')
 
   composerButton(renderer.tree()).props.onClick()
   await renderer.settle()
@@ -219,7 +222,7 @@ test('composer: a successful optimization becomes undoable and restores the orig
   assert.equal(state.draft, 'rough prompt')
   assert.doesNotMatch(composerButton(renderer.tree()).props.className, /dsh-po-undo/)
   assert.equal(composerButton(renderer.tree()).props.title, '优化提示词')
-  assert.equal(textOf(composerButton(renderer.tree())).trim(), '✨')
+  assert.ok(find(composerButton(renderer.tree()), 'dsh-po-spark'), 'undo returns the sparkle icon')
 })
 
 test('composer: undo is offered once and then cleared', async () => {
@@ -281,7 +284,7 @@ test('composer: a failed call leaves the sparkle in place and logs the reason', 
     await renderer.settle()
     const btn = composerButton(renderer.tree())
     assert.equal(btn.props.title, '优化提示词', 'no undo state after a failure')
-    assert.equal(textOf(btn).trim(), '✨')
+    assert.ok(find(btn, 'dsh-po-spark'), 'the sparkle icon is back')
     assert.deepEqual(state.writes, [], 'nothing is written back on failure')
   } finally {
     console.error = original

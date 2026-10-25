@@ -64,9 +64,13 @@ test('client half reads the draft via the 0.1.2 session-kit hook with legacy fal
   assert.match(text, /selectDraft\(props\.input\)/, 'must keep the pre-0.1.2 props.input fallback')
 })
 
-test('idle button renders the sparkle emoji glyph', () => {
-  const text = read('lib/client.js')
-  assert.match(text, /dsh-po-spark[^)]*"✨"/, 'SparkleIcon must render a literal ✨ emoji span')
+test('the optimize icon is a themeable vector sparkle, not a color emoji', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /className: "dsh-po-spark"/, 'the icon carries the sparkle class')
+  assert.match(client, /\.dsh-po-spark\{[^}]*fill:currentColor/, 'it is filled with the inherited text color so every theme works')
+  assert.doesNotMatch(client, /"✨"/, 'the color emoji glyph is gone')
+  const icon = client.slice(client.indexOf('function SparkleIcon()'), client.indexOf('function SparkleIcon()') + 600)
+  assert.match(icon, /<svg|h\("svg"/, 'the icon is drawn as SVG')
 })
 
 test('disabled state is grayscale (distinct from enabled, equally legible)', () => {
@@ -190,6 +194,33 @@ test('the composer has an inline radio picker before the sparkle', () => {
   assert.ok(client.includes("dsh-po-popover") && client.includes("bottom:calc(100% + 8px)"), 'the menu opens upward')
   assert.match(client, /"aria-haspopup": "dialog"/, 'the trigger announces its popup')
   assert.match(client, /"aria-expanded": open/, 'the trigger exposes the expanded state')
+})
+
+test('the trigger chevron reflects whether the panel is open', () => {
+  const client = read('lib/client.js')
+  assert.ok(
+    client.includes('dsh-po-choice-chevron" + (open ? " dsh-po-choice-chevron-open" : "")'),
+    'the open flag drives the chevron class',
+  )
+  assert.match(client, /\{display:inline-flex;align-items:center;justify-content:center;flex:none;margin-left:1px;transform:rotate\(0deg\);transition:transform/, 'the chevron animates its rotation')
+  assert.match(client, /\.dsh-po-choice-chevron-open\{transform:rotate\(180deg\)\}/, 'open flips it 180 degrees')
+  assert.doesNotMatch(client, /\.dsh-po-choice-chevron\{[^}]*rotate\(180deg\)/, 'closed state stays upright')
+})
+
+test('the trigger carries no icon at all — only title + chevron', () => {
+  const client = read('lib/client.js')
+  assert.doesNotMatch(client, /function RadioDotIcon/, 'the misleading radio glyph is removed')
+  assert.doesNotMatch(client, /dsh-po-choice-mark/, 'no leading mark: a second sparkle would collide with the run button')
+  // 圆点表示「单选」，星芒和执行按钮撞脸；下拉语义交给箭头与 hover 底色。
+  const trigger = client.slice(client.indexOf('className: "dsh-po-choice" + (open'), client.indexOf('h(RadioDotIcon)') + 400)
+  assert.doesNotMatch(trigger, /SparkleIcon/, 'the trigger does not reuse the run icon')
+})
+
+test('the popover reads as a raised panel with a material edge', () => {
+  const client = read('lib/client.js')
+  assert.match(client, /dsh-po-popover\{[^}]*border:1px solid color-mix/, 'the panel has a real edge')
+  assert.match(client, /dsh-po-popover\{[^}]*animation:dsh-po-pop-in/, 'it animates in instead of popping')
+  assert.match(client, /dsh-po-option-selected::before\{[^}]*content/, 'selection is marked by an explicit indicator, not tint alone')
 })
 
 test('the trigger displays the active prompt title', () => {
