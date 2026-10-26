@@ -2,6 +2,42 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Changed
+
+- **动效统一到一套 token**：原先 6 种时长（0.12/0.16/0.18/0.2/0.22/2.4s）与 5 条各自随手的
+  `cubic-bezier` 散落在各条规则里。现在在插件两个根节点上定义 `--dsh-po-dur-*` 与
+  `--dsh-po-ease-*`（tap 90ms / fast 120ms / base 180ms / enter 220ms / breathe 2.4s），
+  全部过渡与关键帧只引用这套值；变量挂在组件根节点而非 `:root`，不污染宿主主题。
+- **补齐缺失的状态反馈**：触发器按下内收、Tab 按下下沉；输入框边框的 hover / focus 由同一条
+  过渡接管（原先边框颜色会瞬跳）；开关滑块与箭头保留轻微过冲，其余位移一律无回弹。
+- **进场动效**：设置页卡片按行错开 25ms 进场，徽标、「已保存 / 保存失败」状态文本、
+  结果预览、缩略图、空状态、页签容器各自有只动 `opacity` / `transform` 的进场。
+  卡片的 `key` 由 `prompt.id` 决定，保存时的重渲染不会重放进场。
+- **浮层与遮罩**：浮层从触发器一侧（`bottom left`）长出，遮罩同帧淡入；关闭时面板即时卸载，
+  `aria-expanded` 不依赖动画结束事件。
+- **选中竖条改用 `scaleY` 生长**，不再对 `height` 做过渡，切换选中时该行不再逐帧重排。
+- **呼吸动画可中断**：关键帧从 3 帧补到 6 帧，相邻帧间距均匀，请求在任意一帧结束都不会
+  突然弹回静止位；振幅由 1.06 / 4° 收到 1.03 / 3.5°，28px 按钮内不再蹭到相邻图标；
+  请求结束时 `drop-shadow` 辉光按 base 档淡出，而不是硬切。
+- **`prefers-reduced-motion` 合并为一处兜底**：原先散落的 3 条只覆盖 4 个选择器，
+  现在统一覆盖全部过渡与关键帧，并额外取消按下位移。
+
+### Fixed
+
+- **`animation` 简写里的 `var()` 缺少回退值会让整条声明失效**：浮层、卡片、徽标等进场动画
+  在浏览器里实际为 `animation-name: none`（单测只做字符串匹配，无法发现）。已为全部
+  86 处 token 引用补上回退值。
+
+### Verification
+
+- `npm test` 112 项全通过；`node test/style-audit.mjs` 输出 `ALL PAIRS PASS`。
+- 用真实渲染核对（非字符串断言）：浮层进场 `opacity` 0 → 0.57 → 0.92 → 1、`scale` 0.96 → 1；
+  箭头 220ms 翻转 180°；开关滑块 113ms 过冲到 12.29px 后收回 12px；选中竖条 `scaleY`
+  0 → 0.84 → 1；忙碌结束时辉光淡出到 `none`；开启 reduced-motion 后全部进场动画为 `none`、
+  过渡为 1ms。
+
 ## [1.4.0] - 2026-10-24
 
 ### Changed
