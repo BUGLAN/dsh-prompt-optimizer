@@ -196,6 +196,17 @@ check('badge', '.dsh-po-badge', 'card', 4.5)
 check('result preview', '.dsh-po-preview', '.dsh-po-preview', 4.5)
 check('danger button (hover)', '.dsh-po-danger', 'page', 4.5)
 
+// ---- feedback surfaces added with the state/UX pass ----
+check('confirm-delete button', '.dsh-po-confirm', '.dsh-po-confirm', 4.5)
+check('composer notice', '.dsh-po-toast', '.dsh-po-toast', 4.5)
+check('popover save error', '.dsh-po-popover-error', '.dsh-po-popover', 4.5)
+check('popover loading text', '.dsh-po-popover-loading', '.dsh-po-popover', 4.5)
+check('load-failure title', '.dsh-po-alert-title', '.dsh-po-alert', 4.5)
+check('load-failure detail', '.dsh-po-alert-text', '.dsh-po-alert', 4.5)
+check('empty state', '.dsh-po-empty', 'page', 4.5)
+check('counter near limit', '.dsh-po-count-warn', 'page', 4.5)
+check('counter at limit', '.dsh-po-count-max', 'page', 4.5)
+
 let failed = 0
 console.log('')
 for (const row of rows) {

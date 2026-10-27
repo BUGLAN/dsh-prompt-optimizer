@@ -1257,3 +1257,341 @@ test('picker: saving a switch does not add or remove menu rows', async () => {
   assert.equal(pickerSwitches(renderer.tree())[1].props.disabled, true,
     'the switch still shows its busy state without resizing the menu')
 })
+
+// ------------------------------------------------- 状态反馈与可访问性（UI 优化）
+
+test('composer: a failed call explains itself next to the button, then gets out of the way', async () => {
+  stubFetch()
+  responses.push({ status: 502, body: { error: 'model produced no output' } })
+  const original = console.error
+  console.error = () => {}
+  try {
+    const { renderer } = mountComposer('rough')
+    renderer.render()
+    composerButton(renderer.tree()).props.onClick()
+    await renderer.settle()
+
+    const toast = find(renderer.tree(), 'dsh-po-toast')
+    assert.ok(toast, 'a visible notice replaces the silent console-only failure')
+    assert.equal(toast.props.role, 'alert', 'the failure is announced to assistive tech')
+    assert.ok(textOf(toast).includes('优化失败：model produced no output'))
+    const btn = composerButton(renderer.tree())
+    assert.match(btn.props.className, /dsh-po-failed/, 'the icon briefly takes the error tint')
+    assert.equal(btn.props['aria-describedby'], 'dsh-po-run-notice', 'the button points at its notice')
+    assert.equal(textOf(btn).trim(), '', 'the button itself still carries no text')
+
+    // The next attempt clears the stale notice before anything else happens.
+    responses.push({ status: 200, body: { optimized: 'better' } })
+    composerButton(renderer.tree()).props.onClick()
+    await renderer.settle()
+    assert.equal(find(renderer.tree(), 'dsh-po-toast'), undefined)
+    assert.doesNotMatch(composerButton(renderer.tree()).props.className, /dsh-po-failed/)
+  } finally {
+    console.error = original
+  }
+})
+
+test('composer: an unchanged result says so instead of looking like nothing happened', async () => {
+  stubFetch()
+  responses.push({ status: 200, body: { optimized: 'same text' } })
+  const { renderer } = mountComposer('same text')
+  renderer.render()
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  const toast = find(renderer.tree(), 'dsh-po-toast')
+  assert.ok(toast)
+  assert.equal(toast.props.role, 'status', 'a neutral outcome is polite, not an alert')
+  assert.match(toast.props.className, /dsh-po-toast-info/)
+})
+
+test('composer: busy, success and undo are announced through a polite live region', async () => {
+  stubFetch()
+  let release
+  responses.push(() => new Promise((resolve) => { release = resolve }))
+  const { renderer } = mountComposer('rough')
+  renderer.render()
+  composerButton(renderer.tree()).props.onClick()
+  renderer.render()
+  const live = () => find(renderer.tree(), 'dsh-po-sr')
+  assert.equal(live().props['aria-live'], 'polite')
+  assert.equal(textOf(live()), '正在优化提示词…')
+  assert.equal(composerButton(renderer.tree()).props['aria-busy'], true)
+
+  release({ status: 200, body: { optimized: 'polished' } })
+  await renderer.settle()
+  assert.equal(textOf(live()), '提示词已优化，再次点击可撤销')
+  composerButton(renderer.tree()).props.onClick()
+  await renderer.settle()
+  assert.equal(textOf(live()), '已恢复原始提示词')
+})
+
+test('settings: the first load shows card-shaped skeletons, not a bare line of text', async () => {
+  stubFetch()
+  const Section = componentSlot('settings.section')
+  const renderer = createRenderer((props) => Section(props))
+  responses.push(() => new Promise(() => {}))
+  await renderer.settle()
+  const skeleton = find(renderer.tree(), 'dsh-po-skeleton-list')
+  assert.ok(skeleton, 'a skeleton list is rendered while loading')
+  assert.equal(skeleton.props.role, 'status')
+  assert.equal(findAll(renderer.tree(), 'dsh-po-skeleton').length, 3)
+  assert.ok(textOf(renderer.tree()).includes('正在加载配置…'), 'screen readers still hear the loading state')
+})
+
+test('settings: a failed load renders an alert block with a retry action', async () => {
+  stubFetch()
+  const Section = componentSlot('settings.section')
+  const renderer = createRenderer((props) => Section(props))
+  responses.push({ status: 500, body: { error: 'disk unavailable' } })
+  await renderer.settle()
+  const alert = find(renderer.tree(), 'dsh-po-alert')
+  assert.ok(alert)
+  assert.equal(alert.props.role, 'alert')
+  assert.ok(textOf(alert).includes('disk unavailable'))
+
+  responses.push({ status: 200, body: { config: { defaultId: '', prompts: [] } } })
+  click(renderer.tree(), '重试')
+  await renderer.settle()
+  assert.equal(find(renderer.tree(), 'dsh-po-alert'), undefined, 'retry recovers')
+  assert.ok(find(renderer.tree(), 'dsh-po-card'), 'the list renders after a successful retry')
+})
+
+test('settings: tabs follow the WAI-ARIA tabs pattern, including arrow keys', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [] })
+  await renderer.settle()
+  const tabs = () => findAll(renderer.tree(), 'dsh-po-tab')
+  assert.deepEqual(tabs().map((tab) => tab.props.tabIndex), [0, -1], 'roving tabindex')
+  assert.deepEqual(tabs().map((tab) => tab.props['aria-controls']), ['dsh-po-tabpanel', 'dsh-po-tabpanel'])
+  const panel = find(renderer.tree(), 'dsh-po-panel')
+  assert.equal(panel.props.role, 'tabpanel')
+  assert.equal(panel.props['aria-labelledby'], 'dsh-po-tab-prompts')
+
+  tabs()[0].props.onKeyDown({ key: 'ArrowRight', preventDefault() {} })
+  await renderer.settle()
+  assert.deepEqual(tabs().map((tab) => tab.props['aria-selected']), [false, true])
+  assert.ok(control(renderer.tree(), 'dsh-po-test-input'), 'the test panel is shown')
+  tabs()[1].props.onKeyDown({ key: 'Home', preventDefault() {} })
+  await renderer.settle()
+  assert.deepEqual(tabs().map((tab) => tab.props['aria-selected']), [true, false])
+})
+
+test('settings: save feedback appears in the tab bar status region', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [{ id: 'p1', name: '一', instruction: 'ONE' }] })
+  await renderer.settle()
+  let release
+  responses.push(() => new Promise((resolve) => { release = resolve }))
+  findAll(renderer.tree(), 'dsh-po-action').filter((node) => textOf(node).trim() === '设为默认')[0].props.onClick()
+  await renderer.settle()
+  const status = () => find(renderer.tree(), 'dsh-po-status')
+  assert.equal(status().props.role, 'status')
+  assert.ok(textOf(status()).includes('保存中…'))
+  release({ status: 200, body: { config: { defaultId: 'p1', prompts: [{ id: 'p1', name: '一', instruction: 'ONE' }] } } })
+  await renderer.settle()
+  assert.ok(textOf(status()).includes('已保存'))
+})
+
+test('settings: only one primary button competes for attention on the prompts tab', async () => {
+  stubFetch()
+  const renderer = mountSettings({
+    defaultId: '',
+    prompts: [{ id: 'p1', name: '一', instruction: 'ONE' }, { id: 'p2', name: '二', instruction: 'TWO' }],
+  })
+  await renderer.settle()
+  const primaries = findAll(renderer.tree(), 'dsh-po-primary').map((node) => textOf(node).trim())
+  assert.deepEqual(primaries, ['新增提示词'], '"设为默认" is a secondary action on each card')
+})
+
+test('settings: the delete confirmation can be cancelled', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [{ id: 'p1', name: '一', instruction: 'ONE' }] })
+  await renderer.settle()
+  click(renderer.tree(), '删除')
+  await renderer.settle()
+  const confirm = button(renderer.tree(), '确认删除')
+  assert.match(confirm.props.className, /dsh-po-confirm/)
+  assert.equal(confirm.props['aria-label'], '确认删除「一」')
+  click(renderer.tree(), '取消')
+  await renderer.settle()
+  assert.equal(button(renderer.tree(), '确认删除'), undefined)
+  assert.ok(button(renderer.tree(), '删除'))
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 0)
+})
+
+test('settings: the editor supports Esc to cancel and Cmd/Ctrl+Enter to save', async () => {
+  stubFetch()
+  const renderer = mountSettings({ defaultId: '', prompts: [] })
+  await renderer.settle()
+  click(renderer.tree(), '新增提示词')
+  await renderer.settle()
+  const editor = () => findAll(renderer.tree(), 'dsh-po-card-editing')[0]
+  assert.equal(control(renderer.tree(), 'dsh-po-name-input').props.autoFocus, true)
+  editor().props.onKeyDown({ key: 'Escape', preventDefault() {} })
+  await renderer.settle()
+  assert.equal(editor(), undefined, 'Esc closes the editor')
+
+  click(renderer.tree(), '新增提示词')
+  await renderer.settle()
+  editor().props.onKeyDown({ key: 'Enter', ctrlKey: true, preventDefault() {} })
+  await renderer.settle()
+  assert.equal(control(renderer.tree(), 'dsh-po-name-input').props['aria-invalid'], true, 'the empty name is flagged on the field')
+  control(renderer.tree(), 'dsh-po-name-input').props.onChange({ target: { value: '快捷' } })
+  control(renderer.tree(), 'dsh-po-instruction-input').props.onChange({ target: { value: 'FAST' } })
+  await renderer.settle()
+  responses.push({ status: 200, body: { config: { defaultId: '', prompts: [{ id: 'p9', name: '快捷', instruction: 'FAST' }] } } })
+  editor().props.onKeyDown({ key: 'Enter', metaKey: true, preventDefault() {} })
+  await renderer.settle()
+  const post = JSON.parse(requests.find((request) => request.method === 'POST').body)
+  assert.equal(post.config.prompts[0].name, '快捷')
+})
+
+test('settings: running a test shows a skeleton in place and copying confirms itself', async () => {
+  stubFetch()
+  const writes = []
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText: async (text) => { writes.push(text) } } },
+  })
+  const renderer = mountSettings({ defaultId: '', prompts: [] })
+  await renderer.settle()
+  await prepareTest(renderer)
+  let release
+  responses.push(() => new Promise((resolve) => { release = resolve }))
+  click(renderer.tree(), '开始测试')
+  await renderer.settle()
+  assert.ok(find(renderer.tree(), 'dsh-po-preview-skeleton'), 'the result area shows a skeleton while running')
+  assert.equal(button(renderer.tree(), '测试中…').props['aria-busy'], true)
+
+  release({ status: 200, body: { optimized: 'RESULT' } })
+  await renderer.settle()
+  assert.equal(find(renderer.tree(), 'dsh-po-preview-skeleton'), undefined)
+  click(renderer.tree(), '复制')
+  await renderer.settle()
+  assert.deepEqual(writes, ['RESULT'])
+  assert.ok(button(renderer.tree(), '已复制'), 'the copy button confirms the copy')
+  if (previous) Object.defineProperty(globalThis, 'navigator', previous)
+})
+
+test('picker: pointer-driven focus loss never closes the menu under the cursor', async () => {
+  stubFetch()
+  startupConfig = { defaultId: '', prompts: [] }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+  const popover = () => find(renderer.tree(), 'dsh-po-popover')
+  const textarea = { tagName: 'TEXTAREA' }
+  // The host composer steals focus on mousedown: the popover must stay mounted
+  // so the following click still reaches the switch.
+  let prevented = false
+  popover().props.onMouseDown({ stopPropagation() {}, preventDefault() { prevented = true } })
+  assert.equal(prevented, true, 'mousedown inside the menu keeps focus in place')
+  popover().props.onBlur({ relatedTarget: textarea })
+  await renderer.settle()
+  assert.ok(popover(), 'a non-keyboard blur leaves the menu open')
+
+  responses.push({ status: 200, body: { config: { defaultId: '', builtinUseImages: true, prompts: [] }, capabilities: { image: true } } })
+  walk(renderer.tree(), (node) => { if (node.props?.role === 'switch') node.props.onChange({ target: { checked: true } }) })
+  await renderer.settle()
+  assert.equal(JSON.parse(requests.find((r) => r.method === 'POST').body).config.builtinUseImages, true, 'the switch click lands')
+})
+
+test('picker: tabbing out of the menu or clicking the backdrop closes it', async () => {
+  stubFetch()
+  startupConfig = { defaultId: '', prompts: [] }
+  startupCapabilities = { image: true }
+  const { renderer } = mountComposer('hello')
+  await openPicker(renderer)
+
+  const popover = () => find(renderer.tree(), 'dsh-po-popover')
+  // Tabbing off the last control of a portalled menu hands focus to the browser UI,
+  // so the blur has no relatedTarget — that is still "left the menu".
+  popover().props.onKeyDown({ key: 'Tab' })
+  popover().props.onBlur({ relatedTarget: null })
+  await renderer.settle()
+  assert.equal(popover(), undefined, 'the menu closes when Tab takes focus off the page')
+  assert.equal(find(renderer.tree(), 'dsh-po-choice').props['aria-expanded'], false)
+
+  // A pointer-driven blur must never count as leaving: the host composer steals
+  // focus on mousedown, and unmounting there would eat the following click.
+  await openPicker(renderer)
+  popover().props.onBlur({ relatedTarget: { tagName: 'TEXTAREA' } })
+  await renderer.settle()
+  assert.ok(popover(), 'a pointer blur keeps the menu open')
+
+  find(renderer.tree(), 'dsh-po-popover-backdrop').props.onClick()
+  await renderer.settle()
+  assert.equal(popover(), undefined, 'clicking the backdrop closes the menu')
+  assert.equal(find(renderer.tree(), 'dsh-po-choice').props['aria-expanded'], false)
+})
+
+test('picker: with react-dom available the menu is portalled to <body> and isolates its events', async () => {
+  stubFetch()
+  const portals = []
+  let registration
+  const previousLoader = globalThis.window.__ModuleLoader__
+  globalThis.window.__ModuleLoader__ = { load: (next) => { registration = next } }
+  globalThis.document.body = { tagName: 'BODY' }
+  await import(new URL('../lib/client.js', import.meta.url).href + '?portal=' + Math.random())
+  globalThis.window.__ModuleLoader__ = previousLoader
+  const { React } = await import('./support.mjs')
+  const portalClient = registration.factory((specifier) => {
+    if (specifier === 'react') return React
+    if (specifier === 'react-dom') {
+      return { createPortal: (child, container) => { portals.push(container); return child } }
+    }
+    throw new Error('unexpected module request: ' + specifier)
+  })
+  const registry = new Map()
+  const slots = { inject: (key, callback) => callback(), register: (options, component) => { registry.set(options.name, component); return () => {} } }
+  portalClient.apply({ get: (name) => name === 'slots' ? slots : undefined })
+  const Composer = registry.get('conversation.input.left')
+  const state = { draft: 'hello', attachmentIds: [] }
+  const renderer = createRenderer((props) => Composer(props))
+  renderer.setProps({ useInput: (select) => select(state), inputActions: { setDraft() {} } })
+  await renderer.settle()
+  // The harness never attaches real DOM nodes, so hand the trigger a measurable box
+  // and the window a viewport: the panel must be placed from those numbers.
+  const previousViewport = { width: globalThis.window.innerWidth, height: globalThis.window.innerHeight }
+  globalThis.window.innerWidth = 900
+  globalThis.window.innerHeight = 700
+  find(renderer.tree(), 'dsh-po-choice').props.ref.current = {
+    getBoundingClientRect: () => ({ left: 120, top: 500, bottom: 528 }),
+  }
+  find(renderer.tree(), 'dsh-po-choice').props.onClick()
+  await renderer.settle()
+
+  assert.deepEqual(portals, [globalThis.document.body], 'the menu is rendered into document.body')
+  const anchored = find(renderer.tree(), 'dsh-po-popover')
+  assert.deepEqual(anchored.props.style, { left: 120, bottom: 208 },
+    'the panel sits above the measured trigger, 8px clear of it')
+
+  // Downward placement: trigger near the top with more room below. The flipped panel
+  // must also drop the CSS `bottom`, otherwise top and bottom both apply and the
+  // absolute box is stretched to a negative (zero) height.
+  anchored.props.ref.current = { getBoundingClientRect: () => ({ height: 600 }) }
+  find(renderer.tree(), 'dsh-po-popover-backdrop').props.onClick()
+  await renderer.settle()
+  find(renderer.tree(), 'dsh-po-choice').props.ref.current = {
+    getBoundingClientRect: () => ({ left: 120, top: 100, bottom: 128 }),
+  }
+  find(renderer.tree(), 'dsh-po-choice').props.onClick()
+  await renderer.settle()
+  assert.deepEqual(find(renderer.tree(), 'dsh-po-popover').props.style,
+    { left: 120, top: 136, bottom: 'auto' },
+    'the flipped panel pins top and resets bottom instead of collapsing')
+
+  const layer = find(renderer.tree(), 'dsh-po-layer')
+  assert.ok(layer, 'popover and backdrop share one portal layer')
+  for (const handler of ['onMouseDown', 'onPointerDown', 'onClick', 'onKeyDown']) {
+    let stopped = false
+    layer.props[handler]({ stopPropagation() { stopped = true } })
+    assert.equal(stopped, true, handler + ' does not bubble to the host composer')
+  }
+  const wrap = find(renderer.tree(), 'dsh-po-picker-wrap')
+  assert.ok(find(wrap, 'dsh-po-popover'), 'the stand-in portal renders in place, so the popover is still reachable')
+  globalThis.window.innerWidth = previousViewport.width
+  globalThis.window.innerHeight = previousViewport.height
+  delete globalThis.document.body
+})

@@ -220,7 +220,8 @@ test('the popover reads as a raised panel with a material edge', () => {
   const client = read('lib/client.js')
   assert.match(client, /dsh-po-popover\{[^}]*border:1px solid color-mix/, 'the panel has a real edge')
   assert.match(client, /dsh-po-popover\{[^}]*animation:dsh-po-pop-in/, 'it animates in instead of popping')
-  assert.match(client, /dsh-po-option-selected::before\{[^}]*content/, 'selection is marked by an explicit indicator, not tint alone')
+  assert.match(client, /dsh-po-option-selected\{[^}]*background:/, 'selection is marked by a row highlight, like the native menus')
+  assert.match(client, /\.dsh-po-option-selected\{outline:1px solid Highlight\}/, 'the highlight survives forced-colors mode')
 })
 
 test('the trigger displays the active prompt title', () => {
